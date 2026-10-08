@@ -1,0 +1,30 @@
+## ECE598 block scan chain bit map (87 bits)
+##
+## Source: w26/tutorial/A_Team_Scan_Chain/verilog/share/block_scan.sv.
+## All eleven group copies under w26/commonip/*/ are identical to it.
+##
+##   scan_load[0:0]   = static_wen
+##   scan_load[1:1]   = static_ren
+##   scan_load[21:2]  = static_addr     [19:18] group (11 = clock generator)
+##                                      [11]    0 = SRAM, 1 = control/status regs
+##                                      [10:0]  SRAM word address
+##   scan_load[53:22] = static_wdata    clock generator: [1:0] osc_sel, [4:2] div_sel
+##   scan_load[85:54] = static_rdata    (read back only)
+##   scan_load[86]    = static_ready    (read back only)
+##
+## The chain shifts toward bit 0: scan_data_in enters bit 86 and
+## scan_data_out = scan_slave[0], so bit 0 goes in first and comes out first.
+##
+## Format:  [msb:lsb]:signal_name
+## Rules:   every index 0..length-1 covered exactly once; 'none' = don't care
+
+#!length: 87
+#!order: lsb_first
+#!verified: yes
+
+[0]:static_wen
+[1]:static_ren
+[21:2]:static_addr
+[53:22]:static_wdata
+[85:54]:static_rdata
+[86]:static_ready
