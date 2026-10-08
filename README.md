@@ -223,3 +223,81 @@ Still open:
   nothing about supply sequencing; VDDPST-before-core follows from the pad's
   PAD→VDDPST body diode and the library not being fail-safe.
 # Scan_Chain_Github
+
+## Joe's Group 9 FFT programs
+
+The FFT runner and helpers are combined in `tests/test_joe_basic_fft.py`.
+Run it without arguments for the simple FFT (eight zero inputs, nine stages).
+All previous command-line parameters remain available.
+
+Run from the repository root with the chip connected through FT232H:
+
+```sh
+python tests/test_joe_write_register.py stage 8 --verify
+python tests/test_joe_read_register.py stage
+python tests/test_joe_basic_fft.py
+python tests/test_joe_basic_fft.py --input input.hex --expected expected.hex
+```
+
+Add `--expect VALUE` to check a known register value after reset.
+All three accept `--serial FT...`. Writes accept decimal or `0x` hex; reads
+optionally compare against `--expect`. A mismatch, missing read-ready, or FFT
+timeout exits with status 1. Invalid arguments exit with status 2. `--verify`
+is optional for writes because command registers may change after a write.
+The `done` status register is read-only.
+
+These programs target Group 9 (group selector 0) using its exact addresses:
+
+| Register | Address |
+| --- | --- |
+| point | `0x600` |
+| start | `0x500` |
+| reset | `0x480` |
+| done | `0x440` |
+| stage | `0x420` |
+
+Group 9 uses **bit 10** to select registers. These helpers deliberately do
+not use `make_addr(register=True)`, whose bit-11 convention belongs to the
+other interface. SRAM scan addresses `0x000` through `0x3FF` select 32-bit
+portions: `[9:2]` selects a 128-bit word and `[1:0]` its portion.
+
+**Connection and reset behavior:** each invocation asserts global `rst_n`,
+writes and checks clock config `0x08` (oscillator 0, divide by 4), then releases
+global reset before accessing synchronous registers. Board cleanup asserts
+global reset again on exit, including failures. Consequently, separate write
+and read invocations do not preserve running state: use `--verify` for an
+immediate write/read check. The read program reads after global reset, not a
+previous run's live state. Clock config specifies selectors, not verified MHz.
+
+The basic FFT test follows the supplied stimulus: assert local FFT reset by
+writing 0, clear start, write point configuration `log2(points)-3`, write stage
+configuration `stages-1`, then release local reset by writing 1. It verifies
+configuration readback, requires done bit 0 to be clear, loads and verifies
+input SRAM, writes start=1, polls done bit 0, and compares full 32-bit outputs.
+Defaults are 8 points and 9 stages (register values 0 and 8), taken directly
+from the supplied stimulus; these are test settings, not inferred hardware
+reset defaults. `--points`, `--stages`, and `--timeout` (default 30 seconds)
+are configurable. Timeout is checked between scan reads, so an in-progress
+USB/scan operation can extend wall-clock runtime.
+
+Without files, the test uses eight zero inputs and expects eight zero outputs.
+This is only a completion/zero-result smoke test: unchanged zero memory could
+also match, so it does not prove nonzero FFT arithmetic. For numerical checking,
+provide both input and trusted golden-output files. Each must contain exactly
+`--points` whitespace-separated 32-bit hex words, in scan SRAM order starting
+at address zero; `//` and `#` line comments are accepted. `$readmemh` address
+markers, unknown bits, and wider words are not supported. The scripts do not
+invent complex sample packing, output reordering, or fixed-point rounding:
+prepare golden files using the design's reference model. The same sequential
+input/output addresses as the supplied SystemVerilog stimulus are used.
+
+Offline checks (no attached hardware required):
+
+```sh
+python tests/test_joe_offline.py
+python tests/test_00_offline_selftest.py
+```
+
+The Joe checks exercise sequencing, addresses, CLI results, read readiness,
+timeouts, and output mismatch handling with a fake bus. They do not simulate
+FFT arithmetic or establish that the silicon works.
