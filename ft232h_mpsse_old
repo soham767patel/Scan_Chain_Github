@@ -28,9 +28,8 @@ from __future__ import annotations
 
 import os
 import time
-import sys
 
-
+import ftd2xx
 
 
 class FT232HError(Exception):
@@ -69,188 +68,47 @@ MAX_WRITE_CHUNK = 4096
 FT232H_TYPE = 8
 
 
-def _open_ftdi_index(index: int):
-    """Open an FTDI device by index, with a macOS metadata workaround.
-
-    On Windows, use the normal ftd2xx.open() path.
-
-    On macOS, ftd2xx 1.3.8 constructs an FTD2XX object by calling
-    FT_GetDeviceInfo(). On some Apple-silicon/D2XX combinations that
-    metadata call fails even though FT_Open/read/write work correctly.
-    Bypass only that constructor step on macOS.
-    """
-    import ftd2xx
-
-    if sys.platform != "darwin":
-        return ftd2xx.open(index)
-
-    import ctypes as c
-    from ftd2xx import ftd2xx as impl
-
-    handle = impl._ft.FT_HANDLE()
-    impl.call_ft(
-        impl._ft.FT_Open,
-        index,
-        c.byref(handle),
-    )
-
-    # Construct the normal ftd2xx FTD2XX object without calling __init__,
-    # because __init__ calls FT_GetDeviceInfo() on macOS.
-    dev = object.__new__(impl.FTD2XX)
-    dev.handle = handle
-    dev.status = 1
-
-    return dev
-
-
 def list_ftdi_devices() -> list[dict]:
     """Every FTDI device/channel the D2XX driver sees, as plain dicts."""
-    import ftd2xx  # Lazy import: offline use does not need D2XX.
-
     out = []
-
     for i in range(ftd2xx.createDeviceInfoList()):
-        try:
-            info = ftd2xx.getDeviceInfoDetail(i, update=False)
-
-        except ftd2xx.DeviceError:
-            # On affected macOS/D2XX combinations, enumeration succeeds
-            # but the metadata query can fail.
-            if sys.platform != "darwin":
-                raise
-
-            info = {
-                "type": 0,
-                "id": 0,
-                "serial": b"",
-                "description": b"",
-                "flags": 0,
-            }
-
+        info = ftd2xx.getDeviceInfoDetail(i, update=False)
         out.append({
             "index": i,
             "type": info["type"],
-            "id": info.get("id", 0),
             "serial": info["serial"].decode(errors="replace"),
             "description": info["description"].decode(errors="replace"),
-            "busy": bool(info["flags"] & 1),
+            "busy": bool(info["flags"] & 1),     # opened by another process
         })
-
     return out
-
-
-def _metadata_missing(devices: list[dict]) -> bool:
-    """Return True if D2XX found devices but returned no identity metadata."""
-    return bool(devices) and all(
-        d["type"] == 0
-        and d["id"] == 0
-        and not d["serial"]
-        and not d["description"]
-        for d in devices
-    )
 
 
 def find_ft232h(serial: str | None = None) -> tuple[int, str]:
     """Return (index, serial) of the FT232H to use.
 
-    Normally the FT232H is selected by D2XX chip type.
-
-    On macOS, if D2XX returns blank device metadata:
-      - one connected FTDI device -> use it
-      - multiple connected FTDI devices -> require FT232H_INDEX
+    With serial=None the FT232H_SERIAL environment variable is used if set;
+    otherwise there must be exactly one FT232H connected. With two or more,
+    set FT232H_SERIAL (or pass serial=) to pick one. Other FTDI chips (for
+    example the ZCU104's FT4232H) are never selected.
     """
     if serial is None:
         serial = os.environ.get("FT232H_SERIAL") or None
-
     devices = list_ftdi_devices()
-
-    # macOS fallback for the metadata issue observed with D2XX.
-    #
-    # Only use this path when ALL device metadata is unusable.
-    # If metadata works normally, use the normal FT232H detection below.
-    if sys.platform == "darwin" and _metadata_missing(devices):
-
-        if serial is not None:
-            raise FT232HError(
-                "D2XX found the FTDI device(s) on macOS but did not "
-                "return serial/type metadata, so FT232H_SERIAL cannot "
-                "be used. Disconnect other FTDI devices or set "
-                "FT232H_INDEX instead."
-            )
-
-        index_text = os.environ.get("FT232H_INDEX")
-
-        if index_text is not None:
-            try:
-                index = int(index_text)
-            except ValueError as exc:
-                raise FT232HError(
-                    "FT232H_INDEX must be an integer"
-                ) from exc
-
-            if not 0 <= index < len(devices):
-                raise FT232HError(
-                    f"FT232H_INDEX={index} is invalid; "
-                    f"D2XX sees {len(devices)} device(s)"
-                )
-
-            return index, ""
-
-        # Safe automatic case for your current Mac setup:
-        # exactly one FTDI device is connected.
-        if len(devices) == 1:
-            return devices[0]["index"], ""
-
-        raise FT232HError(
-            f"D2XX sees {len(devices)} FTDI devices on macOS, "
-            "but returned no usable type/serial metadata. "
-            "Disconnect the other FTDI devices or set "
-            "FT232H_INDEX to the correct D2XX index."
-        )
-
-    # ---------------------------------------------------------------
-    # Normal path
-    # Windows behavior remains unchanged.
-    # ---------------------------------------------------------------
-
-    found = [
-        d for d in devices
-        if d["type"] == FT232H_TYPE
-        and (serial is None or d["serial"] == serial)
-    ]
-
+    found = [d for d in devices if d["type"] == FT232H_TYPE
+             and (serial is None or d["serial"] == serial)]
     if len(found) == 1:
         return found[0]["index"], found[0]["serial"]
-
     listing = "\n".join(
-        f"    index {d['index']}: type={d['type']} "
-        f"serial={d['serial']!r} "
-        f"desc={d['description']!r}"
-        f"{' (busy)' if d['busy'] else ''}"
-        for d in devices
-    ) or "    (no FTDI devices at all)"
-
+        f"    index {d['index']}: type={d['type']} serial={d['serial']!r} "
+        f"desc={d['description']!r}{' (busy)' if d['busy'] else ''}"
+        for d in devices) or "    (no FTDI devices at all)"
     if not found:
-        want = (
-            f"FT232H with serial {serial!r}"
-            if serial
-            else "an FT232H"
-        )
-
-        raise FT232HError(
-            f"could not find {want}. FTDI devices seen:\n"
-            f"{listing}\n"
-            "  Check the FT232H USB cable."
-        )
-
-    raise FT232HError(
-        "more than one FT232H is connected; set FT232H_SERIAL "
-        "(or pass serial=) to choose one:\n"
-        + "\n".join(
-            f"    serial={d['serial']!r}"
-            for d in found
-        )
-    )
+        want = f"FT232H with serial {serial!r}" if serial else "an FT232H"
+        raise FT232HError(f"could not find {want}. FTDI devices seen:\n"
+                          f"{listing}\n  Check the FT232H USB cable.")
+    raise FT232HError("more than one FT232H is connected; set FT232H_SERIAL "
+                      "(or pass serial=) to choose one:\n" + "\n".join(
+                          f"    serial={d['serial']!r}" for d in found))
 
 
 class FT232H_MPSSE:
@@ -264,13 +122,12 @@ class FT232H_MPSSE:
         Pass serial= when more than one FT232H is connected. An explicit ft_id
         opens that list index unchecked -- only for debugging.
         """
-        # import ftd2xx  # Hardware dependency is loaded only when opening USB.
         self.verbose = verbose
         if ft_id is None:
             ft_id, found_serial = find_ft232h(serial)
             self._log(f"found FT232H serial {found_serial!r} at index {ft_id}")
         self._log(f"opening ftd2xx device index {ft_id}")
-        self.dev = _open_ftdi_index(ft_id)
+        self.dev = ftd2xx.open(ft_id)
         self._configure_usb()
         self._enter_mpsse()
         self._sync_mpsse()
@@ -437,16 +294,14 @@ class FT232H_MPSSE:
         return total
 
     def read(self, length: int, timeout_s: float = 2.0) -> bytes:
-        deadline = time.monotonic() + timeout_s
+        deadline = time.time() + timeout_s
         while self.dev.getQueueStatus() < length:
-            if time.monotonic() > deadline:
+            if time.time() > deadline:
                 raise FT232HError(
                     f"read timeout waiting for {length} byte(s); got "
                     f"{self.dev.getQueueStatus()}. Did you forget 0x87, or "
                     f"leave earlier result bytes undrained?")
-            # Short polling avoids a fixed 2 ms penalty at every read fence.
-            # Actual wakeup/USB latency still depends on the host OS.
-            time.sleep(0.0001)
+            time.sleep(0.002)
         return self.dev.read(length)
 
     def flush(self) -> None:

@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ece598_board import Board
-from ece598_scan import DEFAULT_CHAIN_LENGTH, Scan, ScanBus
+from ece598_scan import DEFAULT_CHAIN_LENGTH, Scan, ScanBus, make_addr
 from scan_map import ScanMap
 
 MAP_PATH = Path(__file__).resolve().parent.parent / "maps" / "block_scan.txt"
@@ -30,8 +30,10 @@ def main():
 
         # Write pattern to SRAM
         for i in range(n):
+
             data = 0xA5000000 | i
-            bus.sram_write(i, data, group=args.group)
+            addr = make_addr(args.group, offset=i)
+            bus.write(addr, data) 
             print(f"word {i:4d}: wrote 0x{data:08X}")
 
 

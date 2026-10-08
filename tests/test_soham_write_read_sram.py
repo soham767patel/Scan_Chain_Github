@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ece598_board import Board
-from ece598_scan import DEFAULT_CHAIN_LENGTH, Scan, ScanBus, ScanError
+from ece598_scan import DEFAULT_CHAIN_LENGTH, Scan, ScanBus, ScanError, make_addr
 from scan_map import ScanMap
 
 MAP_PATH = Path(__file__).resolve().parent.parent / "maps" / "block_scan.txt"
@@ -29,7 +29,14 @@ def main():
         board.reset_pulse(hold_s=0.001)
 
         fails = 0
-
+        #first write all the values
+        for i in range(n):
+        
+            data = 0xA5000000 | i
+            addr = make_addr(args.group, offset=i)
+            bus.write(addr, data) 
+            print(f"word {i:4d}: wrote 0x{data:08X}")
+            
         for i in range(n):
             expected = 0xA5000000 | i
 
